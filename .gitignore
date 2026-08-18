@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+.next/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.gradle/
+.idea/
+local.properties
+*.jks
+uploads/*
+!uploads/.gitkeep

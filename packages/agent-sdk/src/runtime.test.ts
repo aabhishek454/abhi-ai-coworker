@@ -1,0 +1,2 @@
+import {describe,it,expect} from "vitest"; import {ToolRegistry} from "./index"; import {z} from "zod";
+describe("ToolRegistry",()=>{it("rejects duplicate tools",()=>{const r=new ToolRegistry(); const t={name:"clock",description:"time",inputSchema:z.object({}),risk:"low" as const,timeoutMs:100,maxRetries:0,execute:async()=>({})};r.register(t);expect(()=>r.register(t)).toThrow(/already/)});it("rejects unknown tools",()=>expect(()=>new ToolRegistry().get("missing")).toThrow(/Unknown/))});
