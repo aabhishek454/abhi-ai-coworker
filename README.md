@@ -2,6 +2,8 @@
 
 ABHI is an agent-first personal workspace: **user → task → plan → act → result**. This repository contains the responsive virtual-office web client, a native Jetpack Compose Android client, a realtime API, provider/tool SDKs, and production database design.
 
+**Live:** https://abhi-psi-sand.vercel.app · **Repository:** https://github.com/aabhishek454/abhi-ai-coworker
+
 ## What works now
 
 - Original responsive virtual office with visual `IDLE / THINKING / WORKING / BROWSING / COMPLETED / ERROR / WAITING` states
