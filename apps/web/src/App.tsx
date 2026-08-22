@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Bot, Brain, Folder, KeyRound, Mic, MicOff, Plus, Send, Settings, Sparkles, Volume2, VolumeX, Wifi, X } from "lucide-react";
 
 type Message = { id: string; role: "user" | "assistant"; content: string };
@@ -31,6 +31,10 @@ function normalizeBaseUrl(value: string) {
   return base;
 }
 
+function isOpenRouterKey(key: string) {
+  return key.trim().startsWith("sk-or-v1-");
+}
+
 function extractText(data: any): string {
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content === "string") return content;
@@ -42,8 +46,8 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([welcome]);
   const [input, setInput] = useState("");
   const [apiKey, setApiKey] = useState(() => loadText("abhi-api-key"));
-  const [baseUrl, setBaseUrl] = useState(() => loadText("abhi-base-url", "https://tokenra.io/v1"));
-  const [model, setModel] = useState(() => loadText("abhi-model", "stealth/ox-alpha"));
+  const [baseUrl, setBaseUrl] = useState(() => loadText("abhi-base-url", "https://openrouter.ai/api/v1"));
+  const [model, setModel] = useState(() => loadText("abhi-model", "openrouter/owl-alpha:free"));
   const [keyDraft, setKeyDraft] = useState("");
   const [baseDraft, setBaseDraft] = useState("");
   const [modelDraft, setModelDraft] = useState("");
@@ -57,103 +61,181 @@ function App() {
   const recognition = useRef<any>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { try { localStorage.setItem("abhi-memory", JSON.stringify(memory.slice(-20))); } catch {} }, [memory]);
-  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, busy]);
+  // Persist local-only memory. API credentials are never committed to GitHub.
+  useMemo(() => { try { localStorage.setItem("abhi-memory", JSON.stringify(memory.slice(-20))); } catch {} return null; }, [memory]);
 
   const status = useMemo(() => busy ? "Thinking…" : listening ? "Listening…" : "Online", [busy, listening]);
   const canSend = input.trim().length > 0 && !busy;
 
   function openSettings() {
-    setKeyDraft(""); setBaseDraft(baseUrl); setModelDraft(model); setShowSettings(true);
+    setKeyDraft("");
+    setBaseDraft(baseUrl);
+    setModelDraft(model);
+    setShowSettings(true);
   }
 
   function saveSettings() {
-    const nextBase = normalizeBaseUrl(baseDraft || baseUrl);
-    const nextModel = (modelDraft || model).trim();
     const nextKey = keyDraft.trim();
-    if (nextKey) { localStorage.setItem("abhi-api-key", nextKey); setApiKey(nextKey); }
+    let nextBase = normalizeBaseUrl(baseDraft || baseUrl);
+    let nextModel = (modelDraft || model).trim();
+
+    // OpenRouter keys are recognizable by the sk-or-v1- prefix. Automatically
+    // switch away from an old TokenRa configuration when such a key is saved.
+    if (nextKey && isOpenRouterKey(nextKey)) {
+      nextBase = "https://openrouter.ai/api/v1";
+      if (!nextModel || nextModel === "stealth/ox-alpha") nextModel = "openrouter/owl-alpha:free";
+    }
+
+    if (nextKey) {
+      localStorage.setItem("abhi-api-key", nextKey);
+      setApiKey(nextKey);
+    }
     localStorage.setItem("abhi-base-url", nextBase);
     localStorage.setItem("abhi-model", nextModel);
-    setBaseUrl(nextBase); setModel(nextModel); setBaseDraft(nextBase); setModelDraft(nextModel); setKeyDraft(""); setShowSettings(false);
+    setBaseUrl(nextBase);
+    setModel(nextModel);
+    setBaseDraft(nextBase);
+    setModelDraft(nextModel);
+    setKeyDraft("");
+    setShowSettings(false);
   }
 
-  function clearKey() { localStorage.removeItem("abhi-api-key"); setApiKey(""); setKeyDraft(""); }
+  function clearKey() {
+    localStorage.removeItem("abhi-api-key");
+    setApiKey("");
+    setKeyDraft("");
+  }
 
   function speak(text: string) {
     if (!("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text.replace(/[*_`#]/g, ""));
-    u.rate = 1; u.pitch = 1; u.onstart = () => setSpeaking(true); u.onend = () => setSpeaking(false);
+    u.rate = 1;
+    u.pitch = 1;
+    u.onstart = () => setSpeaking(true);
+    u.onend = () => setSpeaking(false);
     window.speechSynthesis.speak(u);
   }
-  function stopSpeaking() { window.speechSynthesis?.cancel(); setSpeaking(false); }
+
+  function stopSpeaking() {
+    window.speechSynthesis?.cancel();
+    setSpeaking(false);
+  }
 
   function startVoice() {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) { setInput("Voice input isn't supported in this browser. Use Chrome on Android."); return; }
-    if (listening) { recognition.current?.stop(); setListening(false); return; }
-    const r = new SR(); recognition.current = r; r.lang = "en-IN"; r.interimResults = true; r.continuous = false;
+    if (!SR) {
+      setInput("Voice input isn't supported in this browser. Use Chrome on Android.");
+      return;
+    }
+    if (listening) {
+      recognition.current?.stop();
+      setListening(false);
+      return;
+    }
+    const r = new SR();
+    recognition.current = r;
+    r.lang = "en-IN";
+    r.interimResults = true;
+    r.continuous = false;
     r.onstart = () => setListening(true);
     r.onresult = (e: any) => setInput(Array.from(e.results).map((x: any) => x[0]?.transcript || "").join(""));
-    r.onerror = () => setListening(false); r.onend = () => setListening(false); r.start();
+    r.onerror = () => setListening(false);
+    r.onend = () => setListening(false);
+    r.start();
   }
 
   async function callModel(prompt: string, history: Message[]) {
     if (!apiKey) throw new Error("Add your AI API key in Settings first.");
+
     const endpoint = `${normalizeBaseUrl(baseUrl)}/chat/completions`;
     const payload = {
       model,
-      messages: history.filter((m) => m.id !== "welcome").map((m) => ({ role: m.role, content: m.content })).concat({ role: "user", content: prompt }),
+      messages: history
+        .filter((m) => m.id !== "welcome")
+        .map((m) => ({ role: m.role, content: m.content }))
+        .concat({ role: "user", content: prompt }),
       stream: false,
-      ...(model === "stealth/ox-alpha" ? { reasoning_effort: "max" } : {}),
+      ...(model.includes("alpha") ? { reasoning_effort: "max" } : {}),
     };
+
     let res: Response;
     try {
-      res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(payload) });
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
+      });
     } catch {
       throw new Error(`Could not reach ${normalizeBaseUrl(baseUrl)}. The provider may block browser requests (CORS), or the URL may be incorrect.`);
     }
+
     const raw = await res.text();
     let data: any = {};
     try { data = raw ? JSON.parse(raw) : {}; } catch { data = {}; }
+
     if (!res.ok) {
       const detail = typeof data?.error === "string" ? data.error : data?.error?.message || raw.slice(0, 1000);
       throw new Error(`Gateway ${res.status}: ${detail || "request rejected"}`);
     }
+
     const text = extractText(data);
     if (!text) throw new Error("The provider returned no assistant text. Check the model ID and provider support.");
     return text;
   }
 
   async function testConnection() {
-    if (!apiKey) { setShowSettings(true); return; }
+    if (!apiKey) {
+      setShowSettings(true);
+      return;
+    }
     setTesting(true);
     try {
       const text = await callModel("Reply with exactly: ABHI CONNECTED", []);
       setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "assistant", content: text }]);
     } catch (e) {
-      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "assistant", content: `Connection test failed.\n\n${e instanceof Error ? e.message : "Unknown provider error"}` }]);
-    } finally { setTesting(false); }
+      setMessages((prev) => [...prev, {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: `Connection test failed.\n\n${e instanceof Error ? e.message : "Unknown provider error"}`,
+      }]);
+    } finally {
+      setTesting(false);
+    }
   }
 
   async function send(text = input) {
-    const prompt = text.trim(); if (!prompt || busy) return;
-    setInput(""); setBusy(true);
+    const prompt = text.trim();
+    if (!prompt || busy) return;
+    setInput("");
+    setBusy(true);
+
     const user: Message = { id: crypto.randomUUID(), role: "user", content: prompt };
-    const next = [...messages, user];
     const assistantId = crypto.randomUUID();
-    setMessages([...next, { id: assistantId, role: "assistant", content: "" }]);
+    setMessages([...messages, user, { id: assistantId, role: "assistant", content: "" }]);
+
     try {
       const answer = await callModel(prompt, messages);
       setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, content: answer } : m));
       speak(answer);
     } catch (e) {
-      setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, content: `I’m ready, but the model connection needs attention.\n\n${e instanceof Error ? e.message : "AI connection unavailable."}` } : m));
-    } finally { setBusy(false); }
+      setMessages((prev) => prev.map((m) => m.id === assistantId ? {
+        ...m,
+        content: `I’m ready, but the model connection needs attention.\n\n${e instanceof Error ? e.message : "AI connection unavailable."}`,
+      } : m));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function newChat() { setMessages([welcome]); setInput(""); }
-  function remember() { const last = [...messages].reverse().find((m) => m.role === "user"); if (last) setMemory((prev) => [...prev, last.content.slice(0, 180)].slice(-20)); }
+  function remember() {
+    const last = [...messages].reverse().find((m) => m.role === "user");
+    if (last) setMemory((prev) => [...prev, last.content.slice(0, 180)].slice(-20));
+  }
 
   return <div className="app">
     <aside className={`sidebar ${showNav ? "open" : ""}`}>
@@ -176,10 +258,10 @@ function App() {
       <input className="api-input" type="password" value={keyDraft} onChange={e=>setKeyDraft(e.target.value)} placeholder={apiKey?"••••••••••••••••":"sk-…"} autoComplete="off"/>
       <div className="key-actions"><button className="save-key" onClick={saveSettings}>{apiKey?"Update settings":"Save settings"}</button>{apiKey&&<button className="mini" onClick={clearKey}>Remove key</button>}</div>
       <div className="setting-row"><div><b>API Base URL</b><small>OpenAI-compatible gateway endpoint</small></div></div>
-      <input className="api-input" value={baseDraft} onChange={e=>setBaseDraft(e.target.value)} placeholder="https://tokenra.io/v1"/>
+      <input className="api-input" value={baseDraft} onChange={e=>setBaseDraft(e.target.value)} placeholder="https://openrouter.ai/api/v1"/>
       <div className="setting-row"><div><b>Model</b><small>Provider model identifier</small></div></div>
-      <input className="api-input" value={modelDraft} onChange={e=>setModelDraft(e.target.value)} placeholder="stealth/ox-alpha"/>
-      <div className="key-actions"><button className="save-key" disabled={testing} onClick={testConnection}>{testing?"Testing…":"Test connection"}</button><button className="mini" onClick={saveSettings}>Done</button></div>
+      <input className="api-input" value={modelDraft} onChange={e=>setModelDraft(e.target.value)} placeholder="openrouter/owl-alpha:free"/>
+      <div className="key-actions"><button className="save-key" disabled={testing} onClick={testConnection}>{testing?"Testing…":"Test connection"}</button><button className="mini" onClick={()=>setShowSettings(false)}>Done</button></div>
       <div className="setting-row"><div><b>Voice mode</b><small>Browser speech input + device voice output</small></div><span className="ok">READY</span></div>
       <div className="setting-row"><div><b>Memory</b><small>Local device memory: {memory.length} saved notes</small></div><button className="mini" onClick={()=>{localStorage.removeItem("abhi-memory");setMemory([]);}}>Clear</button></div>
     </div><div className="modal-foot"><p>API key is stored only on this device in this personal-use build.</p></div></div></div>}
