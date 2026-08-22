@@ -11,8 +11,8 @@ app.use(express.json({ limit: "10mb" }));
 const AI_BASE_URL = (process.env.AI_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
 const AI_MODEL = process.env.AI_MODEL || "stealth/ox-alpha";
 
-app.get("/api/health", (_q, r) => r.json({ ok: true, aiConfigured: Boolean(process.env.AI_API_KEY), model: AI_MODEL, provider: AI_BASE_URL, version: "1.0.0" }));
-app.get("/api/config", (_q, r) => r.json({ model: AI_MODEL, aiConfigured: Boolean(process.env.AI_API_KEY), voice: "browser" }));
+app.get("/api/health", (_q, r) => r.json({ ok: true, aiConfigured: Boolean(process.env.AI_API_KEY), model: AI_MODEL, provider: AI_BASE_URL, version: "1.1.0" }));
+app.get("/api/config", (_q, r) => r.json({ model: AI_MODEL, aiConfigured: Boolean(process.env.AI_API_KEY), voice: "browser", clientKeySupported: true }));
 
 const chatSchema = z.object({
   messages: z.array(z.object({ role: z.enum(["system", "user", "assistant"]), content: z.string().min(1).max(1000000) })).min(1),
@@ -22,12 +22,18 @@ const chatSchema = z.object({
 app.post("/api/chat", async (q, r) => {
   const parsed = chatSchema.safeParse(q.body);
   if (!parsed.success) return r.status(400).json({ error: "Invalid chat request" });
-  if (!process.env.AI_API_KEY) return r.status(503).json({ error: "AI API key is not configured yet.", code: "AI_NOT_CONFIGURED" });
+
+  // For personal use, the browser may provide its own API key via this header.
+  // The key is never written to logs or persisted by the server.
+  const clientKey = q.get("x-abhi-api-key")?.trim();
+  const apiKey = clientKey || process.env.AI_API_KEY;
+  if (!apiKey) return r.status(503).json({ error: "Add your AI API key in ABHI Settings.", code: "AI_NOT_CONFIGURED" });
+
   try {
     const upstream = await fetch(`${AI_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${process.env.AI_API_KEY}`,
+        authorization: `Bearer ${apiKey}`,
         "content-type": "application/json",
         ...(process.env.AI_HTTP_REFERER ? { "HTTP-Referer": process.env.AI_HTTP_REFERER } : {}),
         ...(process.env.AI_X_TITLE ? { "X-Title": process.env.AI_X_TITLE } : {}),
