@@ -4,7 +4,7 @@ import App from "./App";
 import "./styles.css";
 import "./features.css";
 
-// Migrate stale model settings from earlier ABHI builds.
+// Migrate only known stale model IDs from earlier builds; otherwise preserve the user's current model choice.
 try {
   const key = localStorage.getItem("abhi-api-key") || "";
   const model = localStorage.getItem("abhi-model") || "";
